@@ -1,14 +1,20 @@
-CC = g++
-CFLAGS = -Wall -Wextra -std=c++17 -g
-SRCS := $(wildcard *.cpp)
-BINS := $(SRCS:.cpp=)
-all: $(BINS)
-%: %.cpp
-	$(CC) $(CFLAGS) $< -o $@
-clean:
-	rm -f $(BINS) *.o
-run-server: server
-	./server
+CXX = g++
+CXXFLAGS = -Wall -Wextra -std=c++11 -g
+SERVER_SRC = server.cpp
+CLIENT_SRC = client.cpp
+COMMON_HPP = common.hpp
+SERVER_TARGET = server
+CLIENT_TARGET = client
 
-run-client: client
-	./client
+all: $(SERVER_TARGET) $(CLIENT_TARGET)
+
+$(SERVER_TARGET): $(SERVER_SRC) $(COMMON_HPP)
+	$(CXX) $(CXXFLAGS) -o $(SERVER_TARGET) $(SERVER_SRC)
+
+$(CLIENT_TARGET): $(CLIENT_SRC) $(COMMON_HPP)
+	$(CXX) $(CXXFLAGS) -o $(CLIENT_TARGET) $(CLIENT_SRC)
+
+clean:
+	rm -f $(SERVER_TARGET) $(CLIENT_TARGET)
+
+.PHONY: all clean
