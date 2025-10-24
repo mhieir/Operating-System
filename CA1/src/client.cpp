@@ -50,13 +50,19 @@ public:
         "\n=== Airline Reservation System ===\n"
         "Available commands:\n"
         "  LIST_FLIGHTS                    - List all flights\n"
-        "  REGISTER <role> <user> <pass>   - Register user\n"
+        "  REGISTER <role> <user> <pass>   - Register user (role: CUSTOMER or AIRLINE)\n"
         "  LOGIN <user> <pass>             - Login\n"
-        "  ADD_FLIGHT <id> <from> <to> <time> <rows> <cols> - Add flight\n"
         "  LOGOUT                          - Logout\n"
+        "  --- Airline Commands ---\n"
+        "  ADD_FLIGHT <id> <from> <to> <time> <rows> <cols> - Add flight\n"
+        "  --- Customer Commands ---\n"
+        "  RESERVE <flight_id> <seat1> [seat2] ... - Reserve seats (e.g., RESERVE F101 A1 B2)\n"
+        "  CONFIRM <reservation_id>        - Confirm a temporary reservation\n"
+        "  CANCEL <reservation_id>         - Cancel a reservation\n"
+        "  --- Client Commands ---\n"
         "  EXIT                            - Exit\n"
-        "Roles: AIRLINE or CUSTOMER\n"
         "===================================\n\n";
+
         write(STDOUT_FILENO, help_msg, strlen(help_msg));
         char input[BUFFER_SIZE];
         while (true) {

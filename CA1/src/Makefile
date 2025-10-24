@@ -1,5 +1,5 @@
 CXX = g++
-CXXFLAGS = -Wall -Wextra -std=c++11 -g
+CXXFLAGS = -Wall -Wextra -std=c++20 -g
 SERVER_SRC = server.cpp
 CLIENT_SRC = client.cpp
 COMMON_HPP = common.hpp

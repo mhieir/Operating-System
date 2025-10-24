@@ -1,4 +1,10 @@
 #include "common.hpp"
+#include <csignal>
+
+class AirlineServer;
+AirlineServer* server_instance = nullptr;
+
+void reservationTimeoutHandler(int signal);
 
 class AirlineServer {
 private:
@@ -9,9 +15,20 @@ private:
     unordered_map<string, Flight> flights;
     unordered_map<int, Reservation> reservations;
     int reservation_counter;
+    volatile bool alarm_triggered_flag;
 
 public:
-    AirlineServer(int port = 8080) : reservation_counter(1000) {
+    AirlineServer(int port = 8080) : reservation_counter(1000), alarm_triggered_flag(false) {
+        server_instance = this;
+        struct sigaction sa;
+        sa.sa_handler = reservationTimeoutHandler;
+        sigemptyset(&sa.sa_mask);
+        sa.sa_flags = 0;
+        if (::sigaction(SIGALRM, &sa, NULL) == -1) {
+            perror("sigaction failed");
+            exit(EXIT_FAILURE);
+        }
+
         client_sockets.resize(MAX_CLIENTS, 0);
         tcp_socket = ::socket(AF_INET, SOCK_STREAM, 0);
         if (tcp_socket < 0) {
@@ -45,10 +62,10 @@ public:
             perror("listen failed");
             exit(1);
         }
-        initializeSampleFlights();
-        const char* msg = "Server initialized with LIST_FLIGHTS, REGISTER, LOGIN, ADD_FLIGHT\n";
+        const char* msg = "Server\n";
         write(STDOUT_FILENO, msg, strlen(msg));
     }
+
     ~AirlineServer() {
         close(tcp_socket);
         close(udp_socket);
@@ -56,30 +73,46 @@ public:
             if (sock > 0) close(sock);
         }
     }
+
+    void handleAlarmSignal() {
+        alarm_triggered_flag = true;
+    }
+
     void run() {
         fd_set readfds;
         int max_sd, activity;
         const char* msg = "Server started. Waiting for connections...\n";
         write(STDOUT_FILENO, msg, strlen(msg));
+
+        setNextAlarm();
+
         while (true) {
+            if (alarm_triggered_flag) {
+                freeExpiredReservations();
+                setNextAlarm();
+                alarm_triggered_flag = false;
+            }
+
             FD_ZERO(&readfds);
             FD_SET(tcp_socket, &readfds);
             FD_SET(udp_socket, &readfds);
             max_sd = (tcp_socket > udp_socket) ? tcp_socket : udp_socket;
             for (int i = 0; i < MAX_CLIENTS; i++) {
                 int sd = client_sockets[i];
-                if (sd > 0) {
-                    FD_SET(sd, &readfds);
-                }
-                if (sd > max_sd) {
-                    max_sd = sd;
-                }
+                if (sd > 0) FD_SET(sd, &readfds);
+                if (sd > max_sd) max_sd = sd;
             }
-            activity = ::select(max_sd + 1, &readfds, NULL, NULL, NULL);
-            if (activity < 0) {
+
+            struct timeval timeout;
+            timeout.tv_sec = 1;
+            timeout.tv_usec = 0;
+            activity = ::select(max_sd + 1, &readfds, NULL, NULL, &timeout);
+
+            if (activity < 0 && errno != EINTR) {
                 perror("select error");
                 continue;
             }
+
             if (FD_ISSET(tcp_socket, &readfds)) {
                 handleNewConnection();
             }
@@ -96,14 +129,78 @@ public:
     }
 
 private:
-    void initializeSampleFlights() {
-        flights["F101"] = Flight("F101", "Tehran", "Paris", "08:30", 10, 6);
-        flights["F205"] = Flight("F205", "Mashhad", "Dubai", "12:15", 8, 5);
-        flights["F310"] = Flight("F310", "Shiraz", "Istanbul", "15:45", 12, 5);
-        flights["F101"].reserveSeat("A1", "user1");
-        flights["F101"].reserveSeat("B2", "user2");
-        flights["F205"].reserveSeat("C3", "user3");
+    // --- CORRECTED ALARM HANDLING ---
+    void setNextAlarm() {
+        time_t now = time(nullptr);
+        time_t earliest_expiry = 0;
+
+        // Find the earliest expiry time among temporary reservations
+        for (const auto& pair : reservations) {
+            const Reservation& res = pair.second;
+            if (res.isTemporary() && !res.isExpired()) {
+                time_t expiry_time = res.getTimestamp() + TEMP_RESERVATION_TIMEOUT;
+                if (earliest_expiry == 0 || expiry_time < earliest_expiry) {
+                    earliest_expiry = expiry_time;
+                }
+            }
+        }
+
+        if (earliest_expiry > 0) {
+            unsigned int seconds_to_wait = earliest_expiry - now;
+            // Ensure we wait at least 1 second
+            if (seconds_to_wait == 0) seconds_to_wait = 1;
+            ::alarm(seconds_to_wait);
+            string log_msg = "Alarm set for " + intToString(seconds_to_wait) + " seconds\n";
+            write(STDOUT_FILENO, log_msg.c_str(), log_msg.length());
+        } else {
+            ::alarm(0); // Cancel any pending alarm
+            const char* msg = "No temporary reservations - alarm cancelled\n";
+            write(STDOUT_FILENO, msg, strlen(msg));
+        }
     }
+
+    void freeExpiredReservations() {
+        vector<int> expired_ids;
+        
+        // Collect IDs of expired reservations
+        for (const auto& pair : reservations) {
+            if (pair.second.isExpired()) {
+                expired_ids.push_back(pair.first);
+            }
+        }
+
+        // Free seats and remove expired reservations
+        for (int id : expired_ids) {
+            auto it = reservations.find(id);
+            if (it != reservations.end()) {
+                Flight* flight = getFlight(it->second.getFlightId());
+                if (flight) {
+                    for (const auto& seat_id : it->second.getSeats()) {
+                        flight->freeSeat(seat_id);
+                    }
+                }
+                string msg = "Reservation " + intToString(id) + " expired and freed\n";
+                write(STDOUT_FILENO, msg.c_str(), msg.length());
+                reservations.erase(it);
+            }
+        }
+    }
+
+
+    User* getUserBySocket(int socket) {
+        for (auto& user_pair : users) {
+            if (user_pair.second.getSocket() == socket && user_pair.second.isLoggedIn()) {
+                return &user_pair.second;
+            }
+        }
+        return nullptr;
+    }
+    Flight* getFlight(const string& flight_id) {
+        auto it = flights.find(flight_id);
+        return (it != flights.end()) ? &it->second : nullptr;
+    }
+
+
     void broadcastToAirlines(const string& message) {
         sockaddr_in broadcast_addr;
         memset(&broadcast_addr, 0, sizeof(broadcast_addr));
@@ -215,31 +312,42 @@ private:
             }
             return true;
         }
-        error_msg = "ERROR Unknown command. Available: LIST_FLIGHTS, REGISTER, LOGIN, LOGOUT, ADD_FLIGHT\n";
+        else if (cmd == "RESERVE") {
+            if (tokens.size() < 3) {
+                error_msg = "ERROR Invalid RESERVE format. Use: RESERVE <flight_id> <seat1> [seat2] ...\n";
+                return false;
+            }
+            return true;
+        }
+        else if (cmd == "CONFIRM") {
+            if (tokens.size() != 2) {
+                error_msg = "ERROR Invalid CONFIRM format. Use: CONFIRM <reservation_id>\n";
+                return false;
+            }
+            return true;
+        }
+        else if (cmd == "CANCEL") {
+            if (tokens.size() != 2) {
+                error_msg = "ERROR Invalid CANCEL format. Use: CANCEL <reservation_id>\n";
+                return false;
+            }
+            return true;
+        }
+
+        error_msg = "ERROR Unknown command.\n";
         return false;
     }
     bool registerUser(const string& role_str, const string& username, const string& password) {
         if (users.find(username) != users.end()) {
             return false;
         }
-        UserRole role;
-        if (role_str == "AIRLINE") {
-            role = UserRole::AIRLINE;
-        } else {
-            role = UserRole::CUSTOMER;
-        }
+        UserRole role = (role_str == "AIRLINE") ? UserRole::AIRLINE : UserRole::CUSTOMER;
         users[username] = User(username, password, role);
         return true;
     }
     bool loginUser(const string& username, const string& password, int client_socket) {
         auto it = users.find(username);
-        if (it == users.end()) {
-            return false;
-        }
-        if (it->second.getPassword() != password) {
-            return false;
-        }
-        if (it->second.isLoggedIn()) {
+        if (it == users.end() || it->second.getPassword() != password || it->second.isLoggedIn()) {
             return false;
         }
         it->second.setLoggedIn(true);
@@ -259,14 +367,11 @@ private:
         writeToSocket(client_socket, response);
     }
     void handleRegister(int client_socket, const vector<string>& tokens) {
-        string role = tokens[1];
-        string username = tokens[2];
-        string password = tokens[3];
-        if (registerUser(role, username, password)) {
+        if (registerUser(tokens[1], tokens[2], tokens[3])) {
             writeToSocket(client_socket, "REGISTERED OK\n");
-            string log_msg = "New user registered: " + username + " (" + role + ")\n";
+            string log_msg = "New user registered: " + tokens[2] + " (" + tokens[1] + ")\n";
             write(STDOUT_FILENO, log_msg.c_str(), log_msg.length());
-            broadcastNewUser(username, role);
+            broadcastNewUser(tokens[2], tokens[1]);
         } else {
             writeToSocket(client_socket, "ERROR UsernameAlreadyExists\n");
         }
@@ -292,6 +397,7 @@ private:
         }
     }
     void handleLogout(int client_socket, const vector<string>& tokens) {
+        (void)tokens;
         string logged_in_user;
         for (auto& user_pair : users) {
             if (user_pair.second.getSocket() == client_socket && user_pair.second.isLoggedIn()) {
@@ -310,22 +416,119 @@ private:
         }
     }
     void handleAddFlight(int client_socket, const vector<string>& tokens) {
-        string flight_id = tokens[1];
-        string origin = tokens[2];
-        string destination = tokens[3];
-        string time = tokens[4];
-        int rows = stoi(tokens[5]);
-        int cols = stoi(tokens[6]);
-        if (flights.find(flight_id) != flights.end()) {
-            writeToSocket(client_socket, "ERROR DuplicateFlightID\n");
+    User* user = getUserBySocket(client_socket);
+    if (!user || !user->isAirline()) {
+        writeToSocket(client_socket, "ERROR PermissionDenied\n");
+        return;
+    }
+    
+    string flight_id = tokens[1];
+    if (flights.count(flight_id)) {
+        writeToSocket(client_socket, "ERROR DuplicateFlightID\n");
+        return;
+    }
+    flights[flight_id] = Flight(flight_id, tokens[2], tokens[3], tokens[4], stoi(tokens[5]), stoi(tokens[6]));
+    writeToSocket(client_socket, "FLIGHT_ADDED OK\n");
+    string log_msg = "New flight added: " + flight_id + "\n";
+    write(STDOUT_FILENO, log_msg.c_str(), log_msg.length());
+    broadcastNewFlight(flight_id, tokens[2], tokens[3], tokens[4]);
+}
+
+    void handleReserve(int client_socket, const vector<string>& tokens) {
+        User* user = getUserBySocket(client_socket);
+        if (!user || !user->isCustomer()) {
+            writeToSocket(client_socket, "ERROR PermissionDenied\n");
             return;
         }
-        flights[flight_id] = Flight(flight_id, origin, destination, time, rows, cols);
-        writeToSocket(client_socket, "FLIGHT_ADDED OK\n");
-        string log_msg = "New flight added: " + flight_id + " " + origin + "->" + destination + " at " + time + "\n";
+        Flight* flight = getFlight(tokens[1]);
+        if (!flight) {
+            writeToSocket(client_socket, "ERROR FlightNotFound\n");
+            return;
+        }
+        vector<string> seats_to_reserve;
+        for (size_t i = 2; i < tokens.size(); ++i) {
+            if (!flight->isSeatAvailable(tokens[i])) {
+                writeToSocket(client_socket, "ERROR SeatNotAvailable: " + tokens[i] + "\n");
+                return;
+            }
+            seats_to_reserve.push_back(tokens[i]);
+        }
+        for (const auto& seat_id : seats_to_reserve) {
+            flight->reserveSeat(seat_id, user->getUsername());
+        }
+        int res_id = reservation_counter++;
+        Reservation res(res_id, flight->getId(), user->getUsername());
+        for (const auto& seat_id : seats_to_reserve) {
+            res.addSeat(seat_id);
+        }
+        reservations[res_id] = res;
+        string log_msg = "Created temporary reservation " + intToString(res_id) + " for user " + user->getUsername() + "\n";
         write(STDOUT_FILENO, log_msg.c_str(), log_msg.length());
-        broadcastNewFlight(flight_id, origin, destination, time);
+        writeToSocket(client_socket, "RESERVED TEMP " + intToString(res_id) + " EXPIRES IN 30\n");
+        setNextAlarm();
     }
+    void handleConfirm(int client_socket, const vector<string>& tokens) {
+        User* user = getUserBySocket(client_socket);
+        if (!user) {
+            writeToSocket(client_socket, "ERROR NotLoggedIn\n");
+            return;
+        }
+        int res_id = stoi(tokens[1]);
+        auto it = reservations.find(res_id);
+        if (it == reservations.end()) {
+            writeToSocket(client_socket, "ERROR ReservationNotFound\n");
+            return;
+        }
+        Reservation& res = it->second;
+        if (res.getUsername() != user->getUsername()) {
+            writeToSocket(client_socket, "ERROR PermissionDenied\n");
+            return;
+        }
+        if (res.isExpired()) {
+            writeToSocket(client_socket, "ERROR ReservationExpired\n");
+            Flight* flight = getFlight(res.getFlightId());
+            if (flight) {
+                for (const auto& seat_id : res.getSeats()) {
+                    flight->freeSeat(seat_id);
+                }
+            }
+            reservations.erase(it);
+            setNextAlarm();
+        } else if (res.isTemporary()) {
+            res.confirm();
+            writeToSocket(client_socket, "CONFIRMATION OK\n");
+            setNextAlarm();
+        } else {
+            writeToSocket(client_socket, "ERROR AlreadyConfirmed\n");
+        }
+    }
+    void handleCancel(int client_socket, const vector<string>& tokens) {
+        User* user = getUserBySocket(client_socket);
+        if (!user) {
+            writeToSocket(client_socket, "ERROR NotLoggedIn\n");
+            return;
+        }
+        int res_id = stoi(tokens[1]);
+        auto it = reservations.find(res_id);
+        if (it == reservations.end()) {
+            writeToSocket(client_socket, "ERROR ReservationNotFound\n");
+            return;
+        }
+        if (it->second.getUsername() != user->getUsername()) {
+            writeToSocket(client_socket, "ERROR PermissionDenied\n");
+            return;
+        }
+        Flight* flight = getFlight(it->second.getFlightId());
+        if (flight) {
+            for (const auto& seat_id : it->second.getSeats()) {
+                flight->freeSeat(seat_id);
+            }
+        }
+        reservations.erase(it);
+        writeToSocket(client_socket, "CANCELLED OK\n");
+        setNextAlarm();
+    }
+
     void handleCommand(int client_socket, const string& command) {
         vector<string> tokens;
         string error_msg;
@@ -334,24 +537,15 @@ private:
             return;
         }
         string cmd = tokens[0];
-        if (cmd == "LIST_FLIGHTS") {
-            handleListFlights(client_socket);
-        } 
-        else if (cmd == "REGISTER") {
-            handleRegister(client_socket, tokens);
-        }
-        else if (cmd == "LOGIN") {
-            handleLogin(client_socket, tokens);
-        }
-        else if (cmd == "LOGOUT") {
-            handleLogout(client_socket, tokens);
-        }
-        else if (cmd == "ADD_FLIGHT") {
-            handleAddFlight(client_socket, tokens);
-        }
-        else {
-            writeToSocket(client_socket, "ERROR Unknown command\n");
-        }
+        if (cmd == "LIST_FLIGHTS") handleListFlights(client_socket);
+        else if (cmd == "REGISTER") handleRegister(client_socket, tokens);
+        else if (cmd == "LOGIN") handleLogin(client_socket, tokens);
+        else if (cmd == "LOGOUT") handleLogout(client_socket, tokens);
+        else if (cmd == "ADD_FLIGHT") handleAddFlight(client_socket, tokens);
+        else if (cmd == "RESERVE") handleReserve(client_socket, tokens);
+        else if (cmd == "CONFIRM") handleConfirm(client_socket, tokens);
+        else if (cmd == "CANCEL") handleCancel(client_socket, tokens);
+        else writeToSocket(client_socket, "ERROR Unknown command\n");
     }
     void handleNewConnection() {
         sockaddr_in client_addr;
@@ -366,14 +560,14 @@ private:
                 client_sockets[i] = new_socket;
                 string conn_msg = "New client connected. Socket: " + intToString(new_socket) + "\n";
                 write(STDOUT_FILENO, conn_msg.c_str(), conn_msg.length());
-                break;
+                return;
             }
         }
     }
     void handleClientMessage(int client_socket, int index) {
         char buffer[BUFFER_SIZE];
         int n = read(client_socket, buffer, BUFFER_SIZE - 1);
-        if (n == 0) {
+        if (n <= 0) {
             for (auto& user_pair : users) {
                 if (user_pair.second.getSocket() == client_socket) {
                     user_pair.second.setLoggedIn(false);
@@ -387,7 +581,7 @@ private:
             write(STDOUT_FILENO, msg.c_str(), msg.length());
             close(client_socket);
             client_sockets[index] = 0;
-        } else if (n > 0) {
+        } else {
             buffer[n] = '\0';
             string command(buffer);
             if (!command.empty() && command.back() == '\n') {
@@ -399,6 +593,12 @@ private:
         }
     }
 };
+
+void reservationTimeoutHandler(int signal) {
+    if (signal == SIGALRM && server_instance) {
+        server_instance->handleAlarmSignal();
+    }
+}
 
 int main() {
     AirlineServer server;

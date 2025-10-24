@@ -34,6 +34,9 @@ const string REGISTER_CMD = "REGISTER";
 const int REGISTER_CMD_SIZE = 4;
 const string ADD_FLIGHT_CMD = "ADD_FLIGHT";
 const int ADD_FLIGHT_CMD_SIZE = 7;
+const string RESERVE_CMD = "RESERVE";
+const string CONFIRM_CMD = "CONFIRM";
+const string CANCEL_CMD = "CANCEL";
 const string EXIT_CMD = "EXIT";
 const string UNVALID_CMD = "Unvalid command.\n";
 const string EMPTY_CMD = "Empty command\n";
@@ -172,6 +175,19 @@ public:
         }
     return false;
     }
+    bool freeSeat(const string& seat_id) {
+        for(auto& seat : seats) {
+            if(seat.getId() == seat_id) {
+                if(seat.isReserved()) {
+                    seat.free();
+                    return true;
+                }
+                return false;
+            }
+        }
+        return false;
+    }
+
     bool isSeatAvailable(const string& seat_id) const {
         for(const Seat& seat : seats) {
             if(seat.getId() == seat_id) {
@@ -209,6 +225,8 @@ public:
     Reservation(int reservation_id, string flight_id, string user) : reservation_id(reservation_id), flight_id(flight_id), username(user), status(ReservationStatus::TEMPORARY), alarm_set(false) {
         timestamp = time(nullptr);
     }
+    Reservation() : reservation_id(-1), status(ReservationStatus::TEMPORARY), timestamp(0), alarm_set(false) {}
+
 
     int getId() const { return reservation_id; }
     const string& getFlightId() const { return flight_id; }
@@ -231,7 +249,7 @@ public:
     bool isTemporary() const { return status == ReservationStatus::TEMPORARY; }
     bool isConfirmed() const { return status == ReservationStatus::CONFIRMED; }
     bool isExpired() const {
-        return isTemporary() && (time(nullptr) - timestamp > TEMP_RESERVATION_TIMEOUT);
+        return isTemporary() && (time(nullptr) - timestamp >= TEMP_RESERVATION_TIMEOUT);
     }
     void confirm() {
         status = ReservationStatus::CONFIRMED;
