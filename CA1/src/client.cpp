@@ -1,4 +1,5 @@
 #include "common.hpp"
+
 #include <exception>
 
 class AirlineClient {
@@ -13,12 +14,10 @@ public:
             perror("Socket creation failed");
             exit(1);
         }
-
         sockaddr_in server_addr;
         memset(&server_addr, 0, sizeof(server_addr));
         server_addr.sin_family = AF_INET;
         server_addr.sin_port = htons(port);
-
         if (inet_pton(AF_INET, host.c_str(), &server_addr.sin_addr) <= 0) {
             perror("Invalid address");
             exit(1);
@@ -52,7 +51,6 @@ public:
         "  LIST_FLIGHTS                    - List all flights\n"
         "  REGISTER <role> <user> <pass>   - Register user (role: CUSTOMER or AIRLINE)\n"
         "  LOGIN <user> <pass>             - Login\n"
-        "  LOGOUT                          - Logout\n"
         "  --- Airline Commands ---\n"
         "  ADD_FLIGHT <id> <from> <to> <time> <rows> <cols> - Add flight\n"
         "  --- Customer Commands ---\n"
@@ -76,7 +74,7 @@ public:
             if (!command.empty() && command.back() == '\n') {
                 command.pop_back();
             }
-            if (command == EXIT_CMD) {
+            if (command == "EXIT_CMD") {
                 write(STDOUT_FILENO, "Goodbye!\n", 9);
                 break;
             }
