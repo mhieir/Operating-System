@@ -50,3 +50,12 @@ bool isNumber(string s) {
     }
     return true;
 }
+
+void put_error(const char *prefix)
+{
+    const char *msg = strerror(errno);
+    write(STDERR_FILENO, prefix, strlen(prefix));
+    write(STDERR_FILENO, ": ", 2);
+    write(STDERR_FILENO, msg, strlen(msg));
+    write(STDERR_FILENO, "\n", 1);
+}

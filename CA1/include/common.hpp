@@ -16,6 +16,8 @@
 #include <sys/select.h>
 #include <errno.h>
 #include <signal.h>
+#include <exception>
+#include <csignal>
 
 using namespace std;
 
@@ -62,6 +64,7 @@ const string EXPIRES_IN_30 = " EXPIRES IN 30\n";
 const string RESERVATION_EXPIRED = "ERROR ReservationExpired\n";
 const string CONFIRMATION_OK = "CONFIRMATION OK\n";
 const string CANCELLED_OK = "CANCELLED OK\n";
+const string EXIT_CMD = "EXIT_CMD";
 
 enum class UserRole {
     CUSTOMER,
@@ -142,6 +145,8 @@ public:
     }
 };
 
+
+
 extern volatile sig_atomic_t alarm_triggered_flag;
 
 vector<string> tokenize(const string& str);
@@ -150,5 +155,6 @@ void writeToSocket(int socket, const string& message);
 void set_alarm_flag(int sig);
 string readFromSocket(int socket);
 bool isNumber(string s);
+void put_error(const char *prefix);
 
 #endif

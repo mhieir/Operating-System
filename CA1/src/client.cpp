@@ -1,17 +1,16 @@
 #include "common.hpp"
 
-#include <exception>
-
 class AirlineClient {
 private:
     int sockfd;
+    int udp_socket;
     string server_host;
 
 public:
-    AirlineClient(const string& host, int port = 8080) : server_host(host) {
+    AirlineClient(const string& host, int port = 8081) : server_host(host) {
         sockfd = ::socket(AF_INET, SOCK_STREAM, 0);
         if (sockfd < 0) {
-            perror("Socket creation failed");
+            put_error("Socket creation failed");
             exit(1);
         }
         sockaddr_in server_addr;
@@ -19,14 +18,40 @@ public:
         server_addr.sin_family = AF_INET;
         server_addr.sin_port = htons(port);
         if (inet_pton(AF_INET, host.c_str(), &server_addr.sin_addr) <= 0) {
-            perror("Invalid address");
+            put_error("Invalid address");
             exit(1);
         }
 
         if (::connect(sockfd, (sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
-            perror("Connection failed");
+            put_error("Connection failed");
             exit(1);
         }
+        udp_socket = ::socket(AF_INET, SOCK_DGRAM, 0);
+        if (udp_socket < 0) {
+            put_error("UDP socket creation failed");
+            exit(1);
+        }
+        int reuse = 1;
+        if (setsockopt(udp_socket, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
+            perror("setsockopt(SO_REUSEADDR) failed");
+        }
+
+        int broadcast_enable = 1;
+        if (setsockopt(udp_socket, SOL_SOCKET, SO_BROADCAST, &broadcast_enable, sizeof(broadcast_enable)) < 0) {
+            perror("setsockopt(SO_BROADCAST) failed");
+            exit(1);
+        }
+        sockaddr_in server_addr_udp;
+        memset(&server_addr_udp, 0, sizeof(server_addr_udp));
+        server_addr_udp.sin_family = AF_INET;
+        server_addr_udp.sin_addr.s_addr = INADDR_ANY;
+        server_addr_udp.sin_port = htons(port);
+
+        if (::bind(udp_socket, (sockaddr*)&server_addr_udp, sizeof(server_addr_udp)) < 0) {
+            put_error("UDP bind failed");
+            exit(1);
+        }
+        
         string msg = "Connected to server at " + host + ":" + intToString(port) + "\n";
         write(STDOUT_FILENO, msg.c_str(), msg.length());
     }
@@ -34,6 +59,9 @@ public:
     ~AirlineClient() {
         if (sockfd > 0) {
             close(sockfd);
+        }
+        if (udp_socket > 0) {
+            close(udp_socket);
         }
     }
 
@@ -63,39 +91,66 @@ public:
 
         write(STDOUT_FILENO, help_msg, strlen(help_msg));
         char input[BUFFER_SIZE];
+        
+        string current_line = "";
+
         while (true) {
-            write(STDOUT_FILENO, "> ", 2);
-            int n = read(STDIN_FILENO, input, BUFFER_SIZE - 1);
-            if (n <= 0) {
+            cout << "> " << flush;
+
+            fd_set readfds;
+            FD_ZERO(&readfds);
+            FD_SET(STDIN_FILENO, &readfds);
+            FD_SET(sockfd, &readfds);
+            FD_SET(udp_socket, &readfds);
+            
+            int max_sd = max(sockfd, udp_socket);
+            int activity = select(max_sd + 1, &readfds, NULL, NULL, NULL);
+
+            if (activity < 0) {
+                perror("select error");
                 break;
             }
-            input[n] = '\0';
-            string command(input);
-            if (!command.empty() && command.back() == '\n') {
-                command.pop_back();
+
+            if (FD_ISSET(STDIN_FILENO, &readfds)) {
+                string line;
+                getline(cin, line);
+                if (cin.eof() || line == "EXIT") {
+                     write(STDOUT_FILENO, "Goodbye!\n", 9);
+                     break;
+                }
+                line += "\n";
+                send(sockfd, line.c_str(), line.length(), 0);
+                current_line = line;
             }
-            if (command == "EXIT_CMD") {
-                write(STDOUT_FILENO, "Goodbye!\n", 9);
-                break;
+
+            if (FD_ISSET(sockfd, &readfds)) {
+                memset(input, 0, BUFFER_SIZE);
+                int valread = read(sockfd, input, BUFFER_SIZE - 1);
+                if (valread <= 0) {
+                    cout << "\nServer disconnected." << endl;
+                    break;
+                }
+                cout << "\r" << string(input);
             }
-            sendCommand(command);
+            if (FD_ISSET(udp_socket, &readfds)) {
+                memset(input, 0, BUFFER_SIZE);
+                int valread = recvfrom(udp_socket, input, BUFFER_SIZE - 1, 0, NULL, NULL);
+                if (valread > 0) {
+                    cout << "\r" << string(80, ' ') << "\r";
+                    cout << "[BROADCAST] " << input << endl;
+                }
+            }
         }
     }
 };
 
 int main(int argc, char* argv[]) {
-    if (argc != 2) {
-        string usage = "Usage: " + string(argv[0]) + " <server_ip>\n" +
-                      "Example: " + string(argv[0]) + " 127.0.0.1\n";
-        write(STDERR_FILENO, usage.c_str(), usage.length());
+    if (argc < 2) {
+        cerr << "Usage: " << argv[0] << " <server_host>" << endl;
         return 1;
     }
-    try {
-        AirlineClient client(argv[1]);
-        client.interactiveMode();
-    } catch (const exception& e) {
-        perror("Client error");
-        return 1;
-    }
+    AirlineClient client(argv[1]);
+    client.interactiveMode();
+
     return 0;
 }

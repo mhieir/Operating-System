@@ -1,39 +1,55 @@
 #include "common.hpp"
 #include "server.hpp"
-#include <csignal>
 
 AirlineServer::AirlineServer(int port) : reservation_counter(0) {
     client_sockets.resize(MAX_CLIENTS, 0);
     tcp_socket = ::socket(AF_INET, SOCK_STREAM, 0);
     if (tcp_socket < 0) {
-        perror("TCP socket creation failed");
+        put_error("TCP socket creation failed");
         exit(1);
     }
     udp_socket = ::socket(AF_INET, SOCK_DGRAM, 0);
     if (udp_socket < 0) {
-        perror("UDP socket creation failed");
+        put_error("UDP socket creation failed");
         exit(1);
     }
-    sockaddr_in server_addr;
-    memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = INADDR_ANY;
-    server_addr.sin_port = htons(port);
+    sockaddr_in server_addr_tcp;
+    memset(&server_addr_tcp, 0, sizeof(server_addr_tcp));
+    server_addr_tcp.sin_family = AF_INET;
+    server_addr_tcp.sin_addr.s_addr = INADDR_ANY;
+    server_addr_tcp.sin_port = htons(8081);
     int opt = 1;
     if (::setsockopt(tcp_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
-        perror("setsockopt failed");
+        put_error("setsockopt failed");
         exit(1);
     }
-    if (::bind(tcp_socket, (sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
-        perror("TCP bind failed");
+
+    sockaddr_in server_addr_udp;
+    memset(&server_addr_udp, 0, sizeof(server_addr_udp));
+    server_addr_udp.sin_family = AF_INET;
+    server_addr_udp.sin_addr.s_addr = INADDR_ANY;
+    server_addr_udp.sin_port = htons(8081);
+
+    int broadcast_en = 1;
+    if(::setsockopt(udp_socket, SOL_SOCKET, SO_BROADCAST, &broadcast_en, sizeof(broadcast_en)) < 0) {
+        put_error("setsockopt failed");
         exit(1);
     }
-    if (::bind(udp_socket, (sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
-        perror("UDP bind failed");
+    if (setsockopt(udp_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0)
+    {
+        perror("UDP setsockopt");
+        exit(EXIT_FAILURE);
+    }
+    if (::bind(tcp_socket, (sockaddr*)&server_addr_tcp, sizeof(server_addr_tcp)) < 0) {
+        put_error("TCP bind failed");
+        exit(1);
+    }
+    if (::bind(udp_socket, (sockaddr*)&server_addr_udp, sizeof(server_addr_udp)) < 0) {
+        put_error("UDPfuihsdfhsdukyfghygf bind failed");
         exit(1);
     }
     if (::listen(tcp_socket, 5) < 0) {
-        perror("listen failed");
+        put_error("listen failed");
         exit(1);
     }
 }
@@ -75,15 +91,13 @@ void AirlineServer::run() {
                 }
                 continue;
             }
-            perror("select error");
+            put_error("select error");
         }
 
         if (FD_ISSET(tcp_socket, &readfds)) {
             handleNewConnection();
         }
-        if (FD_ISSET(udp_socket, &readfds)) {
-            handleUDPBroadcast();
-        }
+
         for (int i = 0; i < MAX_CLIENTS; i++) {
             int sd = client_sockets[i];
             if (sd > 0 && FD_ISSET(sd, &readfds)) {
@@ -163,16 +177,6 @@ void AirlineServer::broadcastNewUser(const string& username, const string& role)
 void AirlineServer::broadcastNewFlight(const string& flight_id, const string& origin, const string& destination, const string& time) {
     string message = NEW_FLIGHT + flight_id + SPACE + origin + SPACE + destination + SPACE + time;
     broadcastToCustomers(message);
-}
-
-void AirlineServer::handleUDPBroadcast() {
-    char buffer[BUFFER_SIZE];
-    sockaddr_in client_addr;
-    socklen_t client_len = sizeof(client_addr);
-    int n = recvfrom(udp_socket, buffer, BUFFER_SIZE, 0, (sockaddr*)&client_addr, &client_len);
-    if (n > 0) {
-        buffer[n] = '\0';
-    }
 }
 
 bool AirlineServer::parseCommand(const string& command, vector<string>& tokens, string& error_msg) {
@@ -391,7 +395,7 @@ void AirlineServer::handleNewConnection() {
     socklen_t client_len = sizeof(client_addr);
     int new_socket = ::accept(tcp_socket, (sockaddr*)&client_addr, &client_len);
     if (new_socket < 0) {
-        perror("accept failed");
+        put_error("accept failed");
         return;
     }
     for (int i = 0; i < MAX_CLIENTS; i++) {
