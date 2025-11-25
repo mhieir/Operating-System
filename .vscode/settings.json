@@ -2,7 +2,10 @@
   "files.associations": {
     "vector": "cpp",
     "string": "cpp",
-    "unordered_map": "cpp"
+    "unordered_map": "cpp",
+    "iosfwd": "cpp",
+    "string_view": "cpp",
+    "iostream": "cpp"
   },
   "C_Cpp_Runner.msvcBatchPath": "",
   "C_Cpp_Runner.cCompilerPath": "clang",
