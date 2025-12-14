@@ -3,6 +3,7 @@
 #include <string.h>
 
 #define MAX_PROCESSES 10
+#define INF 999999
 
 typedef struct {
     char pid[3];
@@ -32,7 +33,6 @@ int dequeue(Queue *q) {
     }
     return -1;
 }
-
 int compare_arrival(const void *a, const void *b) {
     return ((Process *)a)->arrival_time - ((Process *)b)->arrival_time;
 }
@@ -147,33 +147,36 @@ void run_sjf(Process processes[], int count) {
 void run_rr(Process processes[], int count, int quantum) {
     Process rr_processes[MAX_PROCESSES];
     initialize_processes(rr_processes, processes, count);
-    
     Queue ready_queue = { .front = 0, .rear = 0 };
     int current_time = 0;
     int completed_count = 0;
-    int process_in_queue[MAX_PROCESSES] = {0}; // 0: not in, 1: in
+    int process_in_queue[MAX_PROCESSES] = {0};
     char gantt_chart[512] = "";
     int offset = 0;
 
     printf("\nRound Robin, (q=%d)\n", quantum);
-
-    // Initial population of ready queue (for arrival_time 0)
     for (int i = 0; i < count; i++) {
         if (rr_processes[i].arrival_time == 0) {
             enqueue(&ready_queue, i);
             process_in_queue[i] = 1;
         }
     }
-
     while (completed_count < count) {
-        
-        // --- 1. Handle Idle CPU and New Arrivals ---
         if (ready_queue.front == ready_queue.rear) {
-            // Advance time until the next process arrives
-            current_time++;
+            int next_arrival_time = INF;
             for (int i = 0; i < count; i++) {
-                // FIX 1: Only enqueue if the process has arrived, is not already in the queue, AND has not finished.
-                if (rr_processes[i].arrival_time == current_time && 
+                if (rr_processes[i].finish_time == -1) {
+                    if (rr_processes[i].arrival_time < next_arrival_time) {
+                        next_arrival_time = rr_processes[i].arrival_time;
+                    }
+                }
+            }
+            if (next_arrival_time == INF) break;
+            if (current_time < next_arrival_time) {
+                current_time = next_arrival_time;
+            }
+            for (int i = 0; i < count; i++) {
+                if (rr_processes[i].arrival_time <= current_time && 
                     !process_in_queue[i] && 
                     rr_processes[i].finish_time == -1) 
                 {
@@ -181,28 +184,21 @@ void run_rr(Process processes[], int count, int quantum) {
                     process_in_queue[i] = 1;
                 }
             }
+            if (ready_queue.front == ready_queue.rear) break;
             continue;
         }
-
-        // --- 2. Process Execution ---
         int index = dequeue(&ready_queue);
         Process *p = &rr_processes[index];
         process_in_queue[index] = 0;
-
         if (p->start_time == -1) {
             p->start_time = current_time;
         }
-
         int execution_time = (p->remaining_time > quantum) ? quantum : p->remaining_time;
         offset += snprintf(gantt_chart + offset, sizeof(gantt_chart) - offset, "| %s ", p->pid);
-
         for (int i = 0; i < execution_time; i++) {
             current_time++;
             p->remaining_time--;
-            
-            // --- Check for New Arrivals DURING Execution ---
             for (int j = 0; j < count; j++) {
-                // FIX 2: Only enqueue if the process has arrived, is not already in the queue, AND has not finished.
                 if (rr_processes[j].arrival_time == current_time && 
                     !process_in_queue[j] && 
                     rr_processes[j].finish_time == -1) 
@@ -212,19 +208,15 @@ void run_rr(Process processes[], int count, int quantum) {
                 }
             }
         }
-        
-        // --- 3. Process Completion or Preemption ---
         if (p->remaining_time == 0) {
             p->finish_time = current_time;
             completed_count++;
         } else {
-            // Preempted: Re-add to the end of the ready queue
             enqueue(&ready_queue, index);
             process_in_queue[index] = 1;
         }
     }
     offset += snprintf(gantt_chart + offset, sizeof(gantt_chart) - offset, "|");
-
     print_gantt_chart(gantt_chart);
     calculate_and_print_metrics(rr_processes, count);
 }

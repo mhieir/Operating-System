@@ -33,10 +33,8 @@ int main() {
     int M_SMALL = 4;
     K_INCREMENTS = 100000;
     run_race_condition_scenario(M_SMALL);
-    // run_mutex_safe_scenario(M_SMALL);
     int M_LARGE = 20;
     K_INCREMENTS = 1000000;
     run_race_condition_scenario(M_SMALL);
-    // run_mutex_safe_scenario(M_LARGE);
     return 0;
 }
